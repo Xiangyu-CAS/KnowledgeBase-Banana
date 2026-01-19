@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Bot, User, AlertCircle, Download, Copy, Check, Globe, Image as ImageIcon, Sparkles, Search, Activity, ChevronDown, ChevronUp, UserCheck } from 'lucide-react';
-import { ChatMessage, LoadingStatus } from '../types';
+import { ChatMessage, LoadingStatus, Entity } from '../types';
 
 interface MessageListProps {
   messages: ChatMessage[];
   isTyping: boolean;
   loadingStatus: LoadingStatus;
   onSuggestionClick?: (text: string) => void;
+  entities: Entity[];
 }
 
 const CopyButton = ({ text }: { text: string }) => {
@@ -62,7 +63,90 @@ const TraceView = ({ trace }: { trace: any[] }) => {
   );
 };
 
-export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, loadingStatus, onSuggestionClick }) => {
+type MentionChunk = {
+  type: 'text' | 'mention';
+  value: string;
+  entity?: Entity;
+};
+
+const buildMentionChunks = (text: string, entities: Entity[]): MentionChunk[] => {
+  if (!text || entities.length === 0) {
+    return [{ type: 'text', value: text }];
+  }
+
+  const tokens = entities.map((entity) => ({
+    token: `@${entity.name}`,
+    entity
+  }));
+
+  const chunks: MentionChunk[] = [];
+  let cursor = 0;
+
+  while (cursor < text.length) {
+    let nextIndex = -1;
+    let nextToken: { token: string; entity: Entity } | null = null;
+
+    for (const entry of tokens) {
+      const idx = text.indexOf(entry.token, cursor);
+      if (idx === -1) continue;
+      if (nextIndex === -1 || idx < nextIndex || (idx === nextIndex && entry.token.length > (nextToken?.token.length || 0))) {
+        nextIndex = idx;
+        nextToken = entry;
+      }
+    }
+
+    if (nextIndex === -1 || !nextToken) {
+      chunks.push({ type: 'text', value: text.slice(cursor) });
+      break;
+    }
+
+    if (nextIndex > cursor) {
+      chunks.push({ type: 'text', value: text.slice(cursor, nextIndex) });
+    }
+
+    chunks.push({ type: 'mention', value: nextToken.token, entity: nextToken.entity });
+    cursor = nextIndex + nextToken.token.length;
+  }
+
+  return chunks;
+};
+
+const MentionToken = ({ chunk, variant }: { chunk: MentionChunk; variant: 'user' | 'suggestion' }) => {
+  if (chunk.type !== 'mention') {
+    return <span>{chunk.value}</span>;
+  }
+
+  const entity = chunk.entity;
+  const hasPreview = Boolean(entity?.imagePreview);
+  const baseClasses = variant === 'user'
+    ? 'inline-flex items-center gap-1 bg-white/20 text-white font-bold px-2 py-0.5 rounded-lg border border-white/30 mx-0.5 shadow-sm backdrop-blur-sm transform hover:scale-105 transition-transform cursor-default'
+    : 'inline-flex items-center gap-1 bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-lg border border-indigo-100 mx-0.5 shadow-sm cursor-default';
+
+  return (
+    <span className={`group relative ${baseClasses}`}>
+      {hasPreview ? (
+        <img
+          src={entity?.imagePreview}
+          alt={entity?.name}
+          className={variant === 'user' ? 'w-4 h-4 rounded-full object-cover border border-white/40' : 'w-4 h-4 rounded-full object-cover border border-indigo-200'}
+        />
+      ) : (
+        <UserCheck size={10} className={variant === 'user' ? 'text-indigo-200' : 'text-indigo-400'} />
+      )}
+      {chunk.value}
+      {hasPreview && (
+        <span className="absolute left-0 top-full mt-2 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity z-30">
+          <span className="block bg-white rounded-2xl border border-slate-100 shadow-xl p-2">
+            <img src={entity?.imagePreview} alt={entity?.name} className="w-32 h-32 rounded-xl object-cover" />
+            <span className="block text-[10px] font-bold text-slate-600 mt-2 text-center">{entity?.name}</span>
+          </span>
+        </span>
+      )}
+    </span>
+  );
+};
+
+export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, loadingStatus, onSuggestionClick, entities }) => {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -74,21 +158,13 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, lo
       return <ReactMarkdown>{text}</ReactMarkdown>;
     }
 
-    const parts = text.split(/(@[\w\u4e00-\u9fa5]+)/g);
+    const chunks = buildMentionChunks(text, entities);
     
     return (
       <div className="whitespace-pre-wrap leading-relaxed">
-        {parts.map((part, i) => {
-          if (part.startsWith('@')) {
-            return (
-              <span key={i} className="inline-flex items-center gap-1 bg-white/20 text-white font-bold px-2 py-0.5 rounded-lg border border-white/30 mx-0.5 shadow-sm backdrop-blur-sm transform hover:scale-105 transition-transform cursor-default">
-                <UserCheck size={10} className="text-indigo-200" />
-                {part}
-              </span>
-            );
-          }
-          return <span key={i}>{part}</span>;
-        })}
+        {chunks.map((chunk, i) => (
+          <MentionToken key={i} chunk={chunk} variant="user" />
+        ))}
       </div>
     );
   };
@@ -190,7 +266,11 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, lo
                 className="group flex items-center gap-4 p-5 bg-white border border-slate-100 rounded-3xl text-left hover:border-indigo-400 hover:bg-indigo-50/50 transition-all shadow-sm hover:shadow-md"
               >
                 <span className="text-indigo-500 bg-indigo-50 p-3 rounded-2xl group-hover:bg-indigo-100 transition-colors">{item.icon}</span>
-                <span className="text-sm font-bold text-slate-700">{item.text}</span>
+                <span className="text-sm font-bold text-slate-700 leading-relaxed">
+                  {buildMentionChunks(item.text, entities).map((chunk, idx) => (
+                    <MentionToken key={idx} chunk={chunk} variant="suggestion" />
+                  ))}
+                </span>
               </button>
             ))}
           </div>
@@ -245,7 +325,7 @@ export const MessageList: React.FC<MessageListProps> = ({ messages, isTyping, lo
 };
 
 const suggestions = [
-  { icon: <ImageIcon size={18} />, text: "生成一张赛博朋克风格的城市街道，充满霓虹灯" },
-  { icon: <Search size={18} />, text: "分析一下这张图片里的构图和光影效果" },
-  { icon: <Sparkles size={18} />, text: "根据我的知识库角色，写一段关于他们合作的故事" },
+  { icon: <ImageIcon size={18} />, text: "画一张@韩立在山谷中修炼的场景，清晨薄雾与飞剑掠影" },
+  { icon: <Search size={18} />, text: "分析一下这张图片里的构图与光影，重点看人物衣袍质感" },
+  { icon: <Sparkles size={18} />, text: "根据我的知识库角色，写一段@韩立与@慕佩灵联手破阵的故事" },
 ];

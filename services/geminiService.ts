@@ -12,7 +12,8 @@ export class GeminiService {
    * Sends a multi-modal message to Gemini 3 Pro.
    */
   public async sendMessage(text: string, attachments: Attachment[], entities: Entity[], mentions: Entity[] = []): Promise<ChatMessage> {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+    const ai = new GoogleGenAI({ apiKey });
     
     const chat = ai.chats.create({
       model: MODEL_NAME,

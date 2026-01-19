@@ -6,6 +6,11 @@ import { ShieldCheck, Menu, X, RefreshCw, AlertCircle } from 'lucide-react';
 import { Entity } from './types';
 import { compressImage } from './utils';
 
+const discoveredAssets = import.meta.glob(
+  '/KnowledgeBase/**/*.{png,jpg,jpeg,webp,gif}',
+  { eager: true, query: '?url', import: 'default' }
+) as Record<string, string>;
+
 /**
  * Robustly processes an asset by attempting various URL variations.
  * Handles encoding for Chinese characters and path relative/absolute formats.
@@ -85,14 +90,25 @@ const processDiscoveredEntity = async (name: string, imagePath: string): Promise
   }
 };
 
+const getNameFromPath = (path: string) => {
+  const filename = path.split('/').pop() || '';
+  return decodeURIComponent(filename.replace(/\.[^/.]+$/, ''));
+};
+
 export default function App() {
   const [hasKey, setHasKey] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const envApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
   const checkKey = async () => {
+    if (envApiKey) {
+      setHasKey(true);
+      setIsLoading(false);
+      return;
+    }
     if (window.aistudio) {
       const selected = await window.aistudio.hasSelectedApiKey();
       setHasKey(selected);
@@ -105,36 +121,44 @@ export default function App() {
     try {
       const manifestUrl = 'KnowledgeBase/index.json';
       const response = await fetch(manifestUrl, { cache: 'no-cache' });
-      
+
+      const manifestEntries: { name: string; path: string }[] = [];
       if (response.ok) {
         const manifest = await response.json();
         console.log("[Asset Discovery] Manifest loaded:", manifest);
 
-        const discoveryPromises = (manifest.characters || []).map((char: any) => {
-          // If the path in JSON already starts with 'KnowledgeBase/', use it as is.
-          // Otherwise, prepend the base directory.
-          const fullPath = char.path.startsWith('KnowledgeBase/') 
-            ? char.path 
+        (manifest.characters || []).forEach((char: any) => {
+          const fullPath = char.path.startsWith('KnowledgeBase/')
+            ? char.path
             : `KnowledgeBase/${char.path}`;
-          return processDiscoveredEntity(char.name, fullPath);
-        });
-        
-        const results = await Promise.all(discoveryPromises);
-        
-        setEntities(prev => {
-          const uniqueMap = new Map();
-          // Keep existing entities first
-          prev.forEach(item => uniqueMap.set(item.name, item));
-          // Merge new scanned results, prioritizing those with valid previews
-          results.forEach(item => {
-            const existing = uniqueMap.get(item.name);
-            if (!existing || item.imagePreview) {
-              uniqueMap.set(item.name, item);
-            }
-          });
-          return Array.from(uniqueMap.values());
+          manifestEntries.push({ name: char.name, path: fullPath });
         });
       }
+
+      const folderEntries = Object.entries(discoveredAssets).map(([assetPath, url]) => ({
+        name: getNameFromPath(assetPath),
+        path: url
+      }));
+
+      const discoveryPromises = [...manifestEntries, ...folderEntries].map((entry) =>
+        processDiscoveredEntity(entry.name, entry.path)
+      );
+
+      const results = await Promise.all(discoveryPromises);
+
+      setEntities(prev => {
+        const uniqueMap = new Map();
+        // Keep existing entities first
+        prev.forEach(item => uniqueMap.set(item.name, item));
+        // Merge new scanned results, prioritizing those with valid previews
+        results.forEach(item => {
+          const existing = uniqueMap.get(item.name);
+          if (!existing || item.imagePreview) {
+            uniqueMap.set(item.name, item);
+          }
+        });
+        return Array.from(uniqueMap.values());
+      });
     } catch (e) {
       console.error("[Asset Discovery] Error during scan:", e);
     } finally {
@@ -144,6 +168,7 @@ export default function App() {
 
   useEffect(() => {
     const init = async () => {
+      console.info('[Env] GEMINI_API_KEY injected:', Boolean(envApiKey));
       await checkKey();
       const savedEntities = localStorage.getItem('gemini_knowledge_base');
       if (savedEntities) {

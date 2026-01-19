@@ -109,6 +109,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ onError, entities 
                 isTyping={isLoading} 
                 loadingStatus={loadingStatus}
                 onSuggestionClick={(text) => handleSendMessage(text, [])}
+                entities={entities}
              />
         </div>
       </div>

@@ -2,6 +2,8 @@
 
 Nano Banana Pro 是一款基于 Google **Gemini 3 Pro Image Preview** 模型构建的高性能多模态智能终端。它不仅支持常规的文本与图像对话，还独创了 **JIT (Just-in-Time) 知识注入技术**，允许通过 `@` 提及功能实时将本地知识库中的视觉资产注入 AI 上下文，确保模型在处理特定角色或物体时具有极高的视觉一致性。
 
+![Demo](assets/demo.png)
+
 ## ✨ 核心特性
 
 - **📸 多模态交互**：支持上传图片进行识别、分析，并能根据指令生成（输出）新的图像。
@@ -29,29 +31,32 @@ Nano Banana Pro 是一款基于 Google **Gemini 3 Pro Image Preview** 模型构�
 ### 2. 环境准备
 确保你的本地环境已安装 [Node.js](https://nodejs.org/) (建议 v18+)。
 
-### 3. 安装依赖
+### 3. 配置环境变量
+复制 `.env.example` 为 `.env`，并填写你的 API Key：
+```bash
+cp .env.example .env
+```
+然后在 `.env` 中设置：
+```bash
+GEMINI_API_KEY=你的_API_Key
+```
+
+### 4. 安装依赖
 在项目根目录下运行：
 ```bash
 npm install
 ```
 
-### 4. 配置知识库 (可选)
+### 5. 配置知识库 (可选)
 你可以自定义 `KnowledgeBase/` 文件夹下的内容：
 1. 将角色或物体的图片放入该文件夹。
 2. 编辑 `KnowledgeBase/index.json`，按照格式添加对应的 `name` 和 `path`。
 3. 应用会自动扫描并让你可以通过 `@` 提及它们。
 
-### 5. 启动项目
-```bash
-npm start
-```
-或者，如果你使用的是 Vite 等构建工具：
+### 6. 启动项目
 ```bash
 npm run dev
 ```
-
-### 6. 激活终端
-打开浏览器访问后，点击界面上的 **"Activate Terminal"** 按钮，在弹出的窗口中选择或输入你的 API Key 即可开始对话。
 
 ## 💡 使用技巧
 
