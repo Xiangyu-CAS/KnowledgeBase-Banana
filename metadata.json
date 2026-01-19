@@ -1,0 +1,5 @@
+{
+  "name": "KnowledgeBase-banana",
+  "description": "A multi-modal chat application using Gemini 3 Pro Image Preview. Supports multi-turn conversations, image uploads, and image generation with Google Search grounding.",
+  "requestFramePermissions": []
+}
