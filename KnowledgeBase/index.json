@@ -1,3 +1,12 @@
 {
-  "characters": []
+  "characters": [
+    {
+      "name": "乐上师",
+      "path": "KnowledgeBase/乐上师.jpeg"
+    },
+    {
+      "name": "窟耀",
+      "path": "KnowledgeBase/窟耀.jpeg"
+    }
+  ]
 }

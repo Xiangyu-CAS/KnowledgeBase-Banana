@@ -1,8 +1,10 @@
 
 import React, { useEffect, useState } from 'react';
 import { ChatInterface } from './components/ChatInterface';
+import { ComicSessionPanel } from './components/ComicSessionPanel';
 import { KnowledgeBase } from './components/KnowledgeBase';
-import { ShieldCheck, Menu, X, RefreshCw, AlertCircle } from 'lucide-react';
+import { ComicStudio } from './components/ComicStudio';
+import { ShieldCheck, Menu, X, RefreshCw, AlertCircle, Sparkles, LayoutGrid } from 'lucide-react';
 import { Entity } from './types';
 import { compressImage } from './utils';
 
@@ -101,6 +103,7 @@ export default function App() {
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [activeTab, setActiveTab] = useState<'chat' | 'comic'>('chat');
   const envApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
 
   const checkKey = async () => {
@@ -248,29 +251,68 @@ export default function App() {
         ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         fixed md:relative md:translate-x-0 z-40 h-full w-80 bg-white border-r border-slate-100 transition-transform duration-300 ease-in-out flex-shrink-0 flex flex-col
       `}>
-        <KnowledgeBase entities={entities} setEntities={setEntities} isScanning={isScanning} onRescan={scanKnowledgeBase} />
+        {activeTab === 'comic' && <ComicSessionPanel />}
+        <div className="flex-1 min-h-0">
+          <KnowledgeBase entities={entities} setEntities={setEntities} isScanning={isScanning} onRescan={scanKnowledgeBase} />
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col h-full relative overflow-hidden bg-slate-50/20">
-        <div className="absolute top-4 left-4 hidden md:flex z-10 gap-2">
-          {isScanning ? (
-            <div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-full border border-indigo-100 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-sm">
-              <RefreshCw size={12} className="animate-spin" /> Synchronizing Assets...
+        <div className="sticky top-0 z-30 bg-white/90 backdrop-blur-md border-b border-slate-100">
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setActiveTab('chat')}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest transition-all ${
+                  activeTab === 'chat'
+                    ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200'
+                    : 'bg-white border border-slate-200 text-slate-500 hover:text-indigo-600 hover:border-indigo-300'
+                }`}
+              >
+                <Sparkles size={12} />
+                对话
+              </button>
+              <button
+                onClick={() => setActiveTab('comic')}
+                className={`inline-flex items-center gap-2 px-4 py-2 rounded-full text-[11px] font-black uppercase tracking-widest transition-all ${
+                  activeTab === 'comic'
+                    ? 'bg-slate-900 text-white shadow-lg shadow-slate-200'
+                    : 'bg-white border border-slate-200 text-slate-500 hover:text-slate-800 hover:border-slate-300'
+                }`}
+              >
+                <LayoutGrid size={12} />
+                AI 漫画
+              </button>
             </div>
-          ) : (
-            <>
-              <div className="bg-emerald-50 text-emerald-700 px-4 py-2 rounded-full border border-emerald-100 text-[10px] font-black uppercase tracking-widest shadow-sm flex items-center gap-2">
-                <ShieldCheck size={12} /> {activeCount} Neural Nodes Ready
-              </div>
-              {missingCount > 0 && (
-                <div className="bg-amber-50 text-amber-700 px-4 py-2 rounded-full border border-amber-100 text-[10px] font-black uppercase tracking-widest shadow-sm flex items-center gap-2">
-                  <AlertCircle size={12} /> {missingCount} Offline
+
+            <div className="hidden md:flex items-center gap-2">
+              {isScanning ? (
+                <div className="bg-indigo-50 text-indigo-600 px-4 py-2 rounded-full border border-indigo-100 text-[10px] font-black uppercase tracking-widest flex items-center gap-2 shadow-sm">
+                  <RefreshCw size={12} className="animate-spin" /> Synchronizing Assets...
                 </div>
+              ) : (
+                <>
+                  <div className="bg-emerald-50 text-emerald-700 px-4 py-2 rounded-full border border-emerald-100 text-[10px] font-black uppercase tracking-widest shadow-sm flex items-center gap-2">
+                    <ShieldCheck size={12} /> {activeCount} Neural Nodes Ready
+                  </div>
+                  {missingCount > 0 && (
+                    <div className="bg-amber-50 text-amber-700 px-4 py-2 rounded-full border border-amber-100 text-[10px] font-black uppercase tracking-widest shadow-sm flex items-center gap-2">
+                      <AlertCircle size={12} /> {missingCount} Offline
+                    </div>
+                  )}
+                </>
               )}
-            </>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-hidden">
+          {activeTab === 'chat' ? (
+            <ChatInterface onError={() => setHasKey(false)} entities={entities} />
+          ) : (
+            <ComicStudio onError={() => setHasKey(false)} entities={entities} setEntities={setEntities} />
           )}
         </div>
-        <ChatInterface onError={() => setHasKey(false)} entities={entities} />
       </div>
     </div>
   );
