@@ -32,13 +32,41 @@ const CopyButton = ({ text }: { text: string }) => {
 const TraceView = ({ trace }: { trace: any[] }) => {
   const [isOpen, setIsOpen] = useState(false);
 
-  const formatPart = (part: any) => {
-    const formatted = { ...part };
-    if (formatted.inlineData && formatted.inlineData.data) {
-      const originalLen = formatted.inlineData.data.length;
-      formatted.inlineData.data = `${formatted.inlineData.data.substring(0, 40)}... [Base64 Data Truncated - ${originalLen} bytes]`;
+  const renderPart = (part: any, index: number) => {
+    if (part?.inlineData?.data) {
+      const mimeType = part.inlineData.mimeType || 'image/png';
+      const isImage = mimeType.startsWith('image/');
+      return (
+        <div key={`trace-part-${index}`} className="space-y-2">
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.2em]">
+            Inline Data · {mimeType}
+          </div>
+          {isImage ? (
+            <img
+              src={`data:${mimeType};base64,${part.inlineData.data}`}
+              alt="Trace Inline"
+              className="max-w-full rounded-xl border border-slate-800 shadow-md"
+            />
+          ) : (
+            <div className="text-[11px] font-mono text-indigo-300/90">[Binary data omitted]</div>
+          )}
+        </div>
+      );
     }
-    return formatted;
+
+    if (part?.text) {
+      return (
+        <pre key={`trace-part-${index}`} className="whitespace-pre-wrap text-[11px] font-mono text-indigo-300/90 leading-relaxed">
+          {part.text}
+        </pre>
+      );
+    }
+
+    return (
+      <pre key={`trace-part-${index}`} className="whitespace-pre-wrap text-[11px] font-mono text-indigo-300/90 leading-relaxed">
+        {JSON.stringify(part, null, 2)}
+      </pre>
+    );
   };
 
   return (
@@ -53,10 +81,8 @@ const TraceView = ({ trace }: { trace: any[] }) => {
       </button>
       
       {isOpen && (
-        <div className="mt-3 p-4 bg-slate-950 rounded-2xl overflow-x-auto border border-slate-800 shadow-inner animate-in slide-in-from-top-2 duration-300">
-          <pre className="text-[11px] font-mono text-indigo-300/90 leading-relaxed scrollbar-thin">
-            {JSON.stringify(trace.map(formatPart), null, 2)}
-          </pre>
+        <div className="mt-3 p-4 bg-slate-950 rounded-2xl border border-slate-800 shadow-inner animate-in slide-in-from-top-2 duration-300 space-y-4">
+          {trace.map(renderPart)}
         </div>
       )}
     </div>

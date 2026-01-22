@@ -35,6 +35,11 @@ const getApiKey = () => process.env.GEMINI_API_KEY || process.env.API_KEY || '';
 const WORKSHOP_IMAGE_MODEL = 'gemini-3-pro-image-preview';
 let workshopHistory: any[] = [];
 
+export const getWorkshopHistory = () => JSON.parse(JSON.stringify(workshopHistory));
+export const resetWorkshopHistory = () => {
+  workshopHistory = [];
+};
+
 export const extractWorkshopEntities = async (text: string): Promise<{ characters: WorkshopCharacter[]; items: WorkshopItem[] }> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const response = await ai.models.generateContent({
@@ -43,8 +48,9 @@ export const extractWorkshopEntities = async (text: string): Promise<{ character
     
     规则：
     1. 人物姓名、身份描述和外貌细节必须使用中文。
-    2. 外貌描述（appearance）必须非常详细，包含发型、五官、体型、标志性服饰（颜色、款式）以及散发的气质，这将直接用于绘图提示词。
-    3. 角色角色（role）必须分类为：主角（protagonist）、反派（antagonist）或配角（supporting）。
+    2. 人物姓名必须以 @ 开头（例如：@韩立）。
+    3. 外貌描述（appearance）必须非常详细，包含发型、五官、体型、标志性服饰（颜色、款式）以及散发的气质，这将直接用于绘图提示词。
+    4. 角色角色（role）必须分类为：主角（protagonist）、反派（antagonist）或配角（supporting）。
     
     小说文本：
     ${text.substring(0, 10000)}`,
@@ -113,10 +119,12 @@ export const generateWorkshopStoryboard = async (text: string, characters: Works
     ${text.substring(0, 8000)}
     
     规则：
-    - 每一页包含 3-5 个平行 panel。
+    - 每一页包含 3-4 个平行 panel，尽量覆盖关键情节，不要跳过主要事件或转折。
     - 每个 panel 只用“一行”描述，格式示例：「Panel 1: 场景/动作；对白：『xxx』」。
-    - 对白必须是中文，描述简短但画面信息充分。
-    - visualPrompt 必须是英文，包含镜头、构图、光影。
+    - 对白必须是中文，描述简短但画面信息充分；前后对话要连贯，保持因果与语气一致。
+    - 禁止无提示的时间跳跃/场景跳切；如需转场必须用对白或画面描述清楚承接。
+    - charactersInPanel 中的人物姓名必须以 @ 开头，并与角色表一致。
+    - visualPrompt 必须是英文，包含镜头、构图、光影，并与上一格风格/构图保持连续性。
 
     输出 pages 数组，每个 page 携带 panels，严格遵守 response schema。`,
     config: {
@@ -174,8 +182,10 @@ export const generateWorkshopStoryboard = async (text: string, characters: Works
 
 export const generateWorkshopImage = async (
   prompt: string,
-  charRefs: { data: string; mimeType: string }[] = [],
-  aspectRatio: '16:9' | '1:1' | '9:16' = '16:9'
+  charRefs: { data: string; mimeType: string; name?: string }[] = [],
+  aspectRatio: '16:9' | '1:1' | '9:16' = '16:9',
+  styleRefs: { data: string; mimeType: string; name?: string }[] = [],
+  resolution?: '2K' | '1K' | '4K' | string
 ): Promise<{ imageUrl: string; trace: string }> => {
   const ai = new GoogleGenAI({ apiKey: getApiKey() });
   const chat = ai.chats.create({
@@ -185,11 +195,35 @@ export const generateWorkshopImage = async (
       systemInstruction: `You are a cinematic manga art director. Produce one vivid frame per turn.
 - Always return exactly one image.
 - Maintain strict character consistency across turns using provided references.
-- Keep visual continuity and coherent pacing between panels.`
+- Prioritize facial identity matching for character references; keep face ID highly consistent across renders.
+- Keep visual continuity and coherent pacing between panels.
+- If style references are provided, the output must match them，风格采用3D 写实角色渲染，接近 3D 游戏/CG 角色海报 `
     }
   });
 
   const parts: any[] = [];
+
+  const shouldInjectStyleRefs = styleRefs.length > 0 && workshopHistory.length === 0;
+  if (shouldInjectStyleRefs) {
+    parts.push({
+      text: '--- Style Reference (Global Visual Tone) ---'
+    });
+  }
+  const uniqueStyleRefs = Array.from(
+    new Map(styleRefs.map((ref, idx) => [`${ref.data.slice(0, 20)}-${ref.name || idx}`, ref])).values()
+  );
+  if (shouldInjectStyleRefs) {
+    uniqueStyleRefs.forEach((ref, idx) => {
+      parts.push({ text: `[Style Reference ${idx + 1}${ref.name ? `: ${ref.name}` : ''}]` });
+      parts.push({
+        inlineData: {
+          data: ref.data,
+          mimeType: ref.mimeType
+        }
+      });
+    });
+    parts.push({ text: '--- End of Style Reference ---' });
+  }
 
   if (charRefs.length > 0) {
     parts.push({
@@ -197,10 +231,10 @@ export const generateWorkshopImage = async (
     });
   }
   const uniqueCharRefs = Array.from(
-    new Map(charRefs.map((ref, idx) => [`${ref.data.slice(0, 20)}-${idx}`, ref])).values()
+    new Map(charRefs.map((ref, idx) => [`${ref.data.slice(0, 20)}-${ref.name || idx}`, ref])).values()
   );
   uniqueCharRefs.forEach((ref, idx) => {
-    parts.push({ text: `[Character Reference ${idx + 1}]` });
+    parts.push({ text: `[Character Reference ${idx + 1}${ref.name ? `: ${ref.name}` : ''}]` });
     parts.push({
       inlineData: {
         data: ref.data,
@@ -213,7 +247,7 @@ export const generateWorkshopImage = async (
   }
 
   parts.push({
-    text: `Render a single ${aspectRatio} anime manga frame. Keep camera, lighting, and styling coherent with prior turns. Scene prompt: ${prompt}`
+    text: `Render a single ${aspectRatio} frame. Scene prompt: ${prompt}`
   });
 
   const trace = parts
@@ -232,7 +266,8 @@ export const generateWorkshopImage = async (
     message: parts,
     config: {
       imageConfig: {
-        aspectRatio
+        aspectRatio,
+        ...(resolution ? { resolution } : {})
       }
     }
   });

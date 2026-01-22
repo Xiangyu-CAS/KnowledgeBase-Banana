@@ -36,6 +36,14 @@ export interface Entity {
   mimeType: string;
 }
 
+export interface SceneReference {
+  id: string;
+  name: string;
+  imagePreview: string;
+  base64: string;
+  mimeType: string;
+}
+
 export type LoadingStatus = 'thinking' | 'generating' | 'searching' | 'idle';
 
 export interface ChatState {

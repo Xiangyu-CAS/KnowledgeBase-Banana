@@ -1,21 +1,26 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, BookOpen, Camera, ChevronRight, Film, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Trash2, Upload, Users } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Activity, AlertCircle, BookOpen, Camera, ChevronRight, Film, Image as ImageIcon, Loader2, RefreshCw, Sparkles, Trash2, Upload, Users, X } from 'lucide-react';
 import sampleChapter from '../assets/凡人修仙传 第五卷 名震一方 第七百三十六章 破阵大战（一）.txt?raw';
 import {
   extractWorkshopEntities,
   generateWorkshopImage,
   generateWorkshopStoryboard,
+  getWorkshopHistory,
+  resetWorkshopHistory,
   WorkshopCharacter,
   WorkshopItem,
   WorkshopScene
 } from '../services/comicStudioService';
-import { Entity } from '../types';
-import { generateId } from '../utils';
+import { Entity, SceneReference } from '../types';
+import { compressDataUrl, generateId } from '../utils';
 
 interface ComicStudioProps {
   entities: Entity[];
   onError: () => void;
   setEntities: React.Dispatch<React.SetStateAction<Entity[]>>;
+  sceneReferences: SceneReference[];
+  sceneRefsInjected: boolean;
+  setSceneRefsInjected: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 type AppStep = 'input' | 'analysis' | 'storyboard' | 'render';
@@ -26,6 +31,58 @@ const parseDataUrl = (dataUrl?: string | null) => {
   const match = meta.match(/data:(.*);base64/);
   const mimeType = match?.[1] || 'image/png';
   return { base64: data, mimeType };
+};
+
+const ensureAtName = (name: string) => (name.startsWith('@') ? name : `@${name}`);
+const stripAtName = (name: string) => name.replace(/^@/, '');
+
+const ASSET_DB_NAME = 'comicStudioAssets';
+const ASSET_STORE = 'pageRenders';
+
+const openAssetDb = () =>
+  new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(ASSET_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ASSET_STORE)) {
+        db.createObjectStore(ASSET_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+
+const savePageRenderImage = async (sessionId: string, pageNumber: number, imageUrl: string) => {
+  if (!sessionId || !imageUrl) return;
+  const db = await openAssetDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(ASSET_STORE, 'readwrite');
+    tx.objectStore(ASSET_STORE).put({ imageUrl, updatedAt: Date.now() }, `${sessionId}:${pageNumber}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const deletePageRenderImage = async (sessionId: string, pageNumber: number) => {
+  if (!sessionId) return;
+  const db = await openAssetDb();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(ASSET_STORE, 'readwrite');
+    tx.objectStore(ASSET_STORE).delete(`${sessionId}:${pageNumber}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const getPageRenderImage = async (sessionId: string, pageNumber: number) => {
+  if (!sessionId) return '';
+  const db = await openAssetDb();
+  return await new Promise<string>((resolve, reject) => {
+    const tx = db.transaction(ASSET_STORE, 'readonly');
+    const req = tx.objectStore(ASSET_STORE).get(`${sessionId}:${pageNumber}`);
+    req.onsuccess = () => resolve(req.result?.imageUrl || '');
+    req.onerror = () => reject(req.error);
+  });
 };
 
 const SESSION_ACTIVE_KEY = 'comicStudioSessionActive';
@@ -45,7 +102,14 @@ interface ComicStudioSession {
   updatedAt: number;
 }
 
-export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, setEntities }) => {
+export const ComicStudio: React.FC<ComicStudioProps> = ({
+  entities,
+  onError,
+  setEntities,
+  sceneReferences,
+  sceneRefsInjected,
+  setSceneRefsInjected
+}) => {
   const [step, setStep] = useState<AppStep>('input');
   const [novelText, setNovelText] = useState('');
   const [characters, setCharacters] = useState<WorkshopCharacter[]>([]);
@@ -59,6 +123,10 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
   const [loadingMsg, setLoadingMsg] = useState('');
   const [errorMessage, setErrorMessage] = useState('');
   const [showPromptId, setShowPromptId] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [historySnapshot, setHistorySnapshot] = useState<any[]>([]);
+  const [historyClearedAt, setHistoryClearedAt] = useState<number | null>(null);
+  const renderRequestIdRef = useRef<Record<number, string>>({});
 
   const existingEntityCount = useMemo(() => entities.length, [entities]);
   const hasStoryboard = storyboard.length > 0;
@@ -107,6 +175,53 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
     }
   };
 
+  const refreshHistory = () => {
+    setHistorySnapshot(getWorkshopHistory());
+  };
+
+  const hydratePageRenders = async (sessionKey: string, renders: Record<number, { imageUrl: string; lastUsedPrompt?: string }>) => {
+    if (!sessionKey) return;
+    const entries = await Promise.all(
+      Object.keys(renders).map(async key => {
+        const pageNumber = Number(key);
+        const imageUrl = await getPageRenderImage(sessionKey, pageNumber);
+        return { pageNumber, imageUrl };
+      })
+    );
+    setPageRenders(prev => {
+      let changed = false;
+      const next = { ...prev };
+      entries.forEach(({ pageNumber, imageUrl }) => {
+        if (!imageUrl) return;
+        const existing = next[pageNumber];
+        if (existing && existing.imageUrl) return;
+        changed = true;
+        next[pageNumber] = { ...existing, imageUrl };
+      });
+      return changed ? next : prev;
+    });
+  };
+
+  const handleClearHistory = () => {
+    resetWorkshopHistory();
+    setSceneRefsInjected(false);
+    setHistorySnapshot([]);
+    setHistoryClearedAt(Date.now());
+    refreshHistory();
+  };
+
+  useEffect(() => {
+    if (showHistory) {
+      refreshHistory();
+    }
+  }, [showHistory]);
+
+  useEffect(() => {
+    if (!historyClearedAt) return;
+    const timer = window.setTimeout(() => setHistoryClearedAt(null), 2000);
+    return () => window.clearTimeout(timer);
+  }, [historyClearedAt]);
+
   const handleLoadSample = () => {
     setNovelText(sampleChapter.trim());
     setStep('input');
@@ -125,7 +240,9 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
   };
 
   const pushToKnowledgeBase = async (name: string, imageUrl: string) => {
-    const parsed = parseDataUrl(imageUrl);
+    const compressed = await compressDataUrl(imageUrl);
+    const normalizedUrl = compressed?.dataUrl || imageUrl;
+    const parsed = parseDataUrl(normalizedUrl);
     if (!parsed) return;
     setEntities(prev => {
       const existing = prev.find(entity => entity.name === name);
@@ -134,7 +251,7 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
         name,
         base64: parsed.base64,
         mimeType: parsed.mimeType,
-        imagePreview: imageUrl
+        imagePreview: normalizedUrl
       };
       if (existing) {
         return prev.map(entity => (entity.name === name ? updated : entity));
@@ -142,13 +259,14 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
       return [updated, ...prev];
     });
     await persistToLocalKnowledgeBase(name, parsed.base64, parsed.mimeType);
+    return normalizedUrl;
   };
 
   const handleTextAnalysis = () =>
     withLoading('正在深度解析小说文本...', async () => {
       if (!novelText.trim()) return;
       const { characters: chars, items: its } = await extractWorkshopEntities(novelText);
-      setCharacters(chars);
+      setCharacters(chars.map(char => ({ ...char, name: ensureAtName(char.name) })));
       setItems(its);
       setStoryboard([]);
       setPageRenders({});
@@ -167,20 +285,30 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
     withLoading('正在绘制角色形象设定图...', async () => {
       const char = characters.find(c => c.id === charId);
       if (!char) return;
-      const refImages = entities
-        .filter(entity => entity.base64 && entity.mimeType)
-        .map(entity => ({ data: entity.base64 as string, mimeType: entity.mimeType as string }));
-      const prompt = `${char.name} character concept art: ${char.appearance}. Half-body portrait, square 1:1 composition, anime style, clean lines, high resolution.`;
-      const { imageUrl, trace } = await generateWorkshopImage(prompt, refImages, '1:1');
+      const matchedEntity = entities.find(entity => entity.name === stripAtName(char.name) && entity.base64 && entity.mimeType);
+      const refImages = matchedEntity
+        ? [{ data: matchedEntity.base64 as string, mimeType: matchedEntity.mimeType as string, name: char.name }]
+        : [];
+      const prompt = `${char.name} character concept art: ${char.appearance}. Half-body portrait`;
+      const styleRefsToInject = !sceneRefsInjected && sceneReferences.length > 0
+        ? sceneReferences
+            .filter(ref => ref.base64)
+            .map(ref => ({ data: ref.base64, mimeType: ref.mimeType, name: ref.name }))
+        : [];
+      const { imageUrl, trace } = await generateWorkshopImage(prompt, refImages, '1:1', styleRefsToInject);
+      if (styleRefsToInject.length > 0) {
+        setSceneRefsInjected(true);
+      }
       const displayPrompt = `PROMPT:\n${prompt}\n\n注入参考: ${refImages.length} 张\n\nTRACE:\n${trace}`;
+      const normalizedUrl = await pushToKnowledgeBase(stripAtName(char.name), imageUrl);
       setCharacters(prev =>
         prev.map(c => (
           c.id === charId
-            ? { ...c, imageUrl, lastUsedPrompt: displayPrompt }
+            ? { ...c, imageUrl: normalizedUrl || imageUrl, lastUsedPrompt: displayPrompt }
             : c
         ))
       );
-      await pushToKnowledgeBase(char.name, imageUrl);
+      refreshHistory();
     });
 
   const handleUploadCharacterImage = (charId: string, file?: File | null) => {
@@ -189,35 +317,60 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
     reader.onload = async e => {
       const url = e.target?.result as string;
       const name = characters.find(c => c.id === charId)?.name;
+      const normalizedUrl = name ? await pushToKnowledgeBase(stripAtName(name), url) : null;
       setCharacters(prev =>
         prev.map(c =>
-          c.id === charId ? { ...c, imageUrl: url, lastUsedPrompt: '由用户手动上传形象参考' } : c
+          c.id === charId
+            ? { ...c, imageUrl: normalizedUrl || url, lastUsedPrompt: '由用户手动上传形象参考' }
+            : c
         )
       );
-      if (name) await pushToKnowledgeBase(name, url);
     };
     reader.readAsDataURL(file);
   };
 
   const handleGeneratePageImage = (pageNumber: number) =>
     withLoading('正在执行整页渲染...', async () => {
+      const requestId = generateId();
+      renderRequestIdRef.current[pageNumber] = requestId;
+      setPageRenders(prev => ({
+        ...prev,
+        [pageNumber]: {
+          imageUrl: '',
+          lastUsedPrompt: '正在生成新版本...'
+        }
+      }));
+      await deletePageRenderImage(sessionId, pageNumber);
       const pagePanels = storyboardPages.find(page => page.pageNumber === pageNumber)?.panels || [];
       if (pagePanels.length === 0) return;
 
-      const refCharacters = characters.filter(c => c.imageUrl);
       const pageCharacters = characters.filter(c =>
-        pagePanels.some(panel => panel.charactersInScene.some(name => c.name.includes(name)))
+        pagePanels.some(panel =>
+          panel.charactersInScene.some(name => stripAtName(name) === stripAtName(c.name))
+        )
       );
+      const refCharacters = pageCharacters.filter(c => c.imageUrl);
       const charRefs = refCharacters
         .map(c => {
           const parsed = parseDataUrl(c.imageUrl);
-          return parsed ? { data: parsed.base64, mimeType: parsed.mimeType } : null;
+          return parsed ? { data: parsed.base64, mimeType: parsed.mimeType, name: c.name } : null;
         })
-        .filter(Boolean) as { data: string; mimeType: string }[];
+        .filter(Boolean) as { data: string; mimeType: string; name?: string }[];
 
       const charDetails =
         pageCharacters.map(c => `${c.name} (${c.appearance})`).join(', ') ||
         '关键角色未提供，保持画风统一';
+      const charRefNames = new Set(charRefs.map(ref => ref.name).filter(Boolean));
+      const focusLine = `\n## 人物形象\n${pageCharacters.length > 0
+        ? pageCharacters
+            .map(c => (
+              charRefNames.has(c.name)
+                ? `- @${c.name}：参考图为 [Character Reference: @${c.name}]`
+                : `- @${c.name}：${c.appearance || '如果没有图片就导入人物库的语义描述'}`
+            ))
+            .join('\n')
+        : '- 无明确角色'
+      }`;
 
       const panelLines = pagePanels
         .map((panel, index) => {
@@ -226,18 +379,36 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
         })
         .join('\n');
 
-      const drawingPrompt = `Create a single manga page with multiple horizontal panels stacked vertically. Each panel is a full-width row. Page ${pageNumber} panels:\n${panelLines}\nCharacters focus: ${charDetails}. Keep consistent styling across panels and prior pages.`;
-      const { imageUrl, trace } = await generateWorkshopImage(drawingPrompt, charRefs);
+      const variationSeed = pageRenders[pageNumber]?.imageUrl ? `\nVariation Seed: ${requestId}` : '';
+      const drawingPrompt = `Create a single manga page with multiple horizontal panels stacked vertically. Each panel is a full-width row. Page ${pageNumber} panels:\n${panelLines}${focusLine} Keep consistent styling across panels and prior pages.${variationSeed}`;
+      const styleRefsToInject = !sceneRefsInjected && sceneReferences.length > 0
+        ? sceneReferences
+            .filter(ref => ref.base64)
+            .map(ref => ({ data: ref.base64, mimeType: ref.mimeType, name: ref.name }))
+        : [];
+      const aspectRatio = '9:16';
+      const resolution = '1K';
+      const { imageUrl, trace } = await generateWorkshopImage(drawingPrompt, charRefs, aspectRatio, styleRefsToInject, resolution);
+      if (renderRequestIdRef.current[pageNumber] !== requestId) {
+        return;
+      }
+      const compressedPage = await compressDataUrl(imageUrl);
+      const normalizedUrl = compressedPage?.dataUrl || imageUrl;
+      await savePageRenderImage(sessionId, pageNumber, normalizedUrl);
+      if (styleRefsToInject.length > 0) {
+        setSceneRefsInjected(true);
+      }
 
       const displayPrompt = `【整页渲染】\n- 注入角色库: ${charRefs.length} 张参考\n- 关注角色: ${pageCharacters.map(c => c.name).join('、') || '未指定'}\n- 发送指令: ${drawingPrompt}\n\nTRACE:\n${trace}`;
 
       setPageRenders(prev => ({
         ...prev,
         [pageNumber]: {
-          imageUrl,
+          imageUrl: normalizedUrl,
           lastUsedPrompt: displayPrompt
         }
       }));
+      refreshHistory();
     });
 
   const handleJumpToRender = () => {
@@ -259,7 +430,7 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
       let updated = false;
       const next = prev.map(char => {
         if (char.imageUrl) return char;
-        const match = entities.find(e => e.name === char.name && e.base64);
+        const match = entities.find(e => e.name === stripAtName(char.name) && e.base64);
         if (!match) return char;
         updated = true;
         return {
@@ -290,10 +461,11 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
       setSessionName(data.name || '未命名会话');
       setStep(data.step || 'input');
       setNovelText(data.novelText || '');
-      setCharacters(data.characters || []);
+      setCharacters((data.characters || []).map(char => ({ ...char, name: ensureAtName(char.name) })));
       setItems(data.items || []);
       setStoryboard(data.storyboard || []);
       setPageRenders(data.pageRenders || {});
+      hydratePageRenders(data.sessionId, data.pageRenders || {});
       setLastSavedAt(data.updatedAt || null);
       localStorage.setItem(SESSION_ACTIVE_KEY, data.sessionId);
     } catch (error) {
@@ -341,6 +513,12 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
     if (!sessionId) return;
     try {
       const now = Date.now();
+      const compactPageRenders = Object.fromEntries(
+        Object.entries(pageRenders).map(([key, value]) => [
+          key,
+          { ...value, imageUrl: '' }
+        ])
+      ) as Record<number, { imageUrl: string; lastUsedPrompt?: string }>;
       const payload: ComicStudioSession = {
         sessionId,
         name: sessionName || '未命名会话',
@@ -350,7 +528,7 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
         characters,
         items,
         storyboard,
-        pageRenders,
+        pageRenders: compactPageRenders,
         updatedAt: now
       };
       localStorage.setItem(`${SESSION_PREFIX}${sessionId}`, JSON.stringify(payload));
@@ -387,6 +565,50 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
     return () => window.removeEventListener('comic-session-activate', handler);
   }, [sessionId]);
 
+  const resolveHistoryEntry = (entry: any) => {
+    if (!entry) return { role: 'model', parts: [] as any[] };
+    if (entry.parts) return { role: entry.role || 'model', parts: entry.parts };
+    if (entry.content?.parts) return { role: entry.content.role || entry.role || 'model', parts: entry.content.parts };
+    return { role: entry.role || 'model', parts: [] as any[] };
+  };
+
+  const renderHistoryPart = (part: any, index: number) => {
+    if (part?.inlineData?.data) {
+      const mimeType = part.inlineData.mimeType || 'image/png';
+      const isImage = mimeType.startsWith('image/');
+      return (
+        <div key={`history-part-${index}`} className="space-y-2">
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-[0.2em]">
+            Inline Data · {mimeType}
+          </div>
+          {isImage ? (
+            <img
+              src={`data:${mimeType};base64,${part.inlineData.data}`}
+              alt="History Inline"
+              className="max-w-full rounded-xl border border-slate-800 shadow-md"
+            />
+          ) : (
+            <div className="text-[11px] font-mono text-slate-400">[Binary data omitted]</div>
+          )}
+        </div>
+      );
+    }
+
+    if (part?.text) {
+      return (
+        <pre key={`history-part-${index}`} className="whitespace-pre-wrap text-[11px] font-mono text-slate-200 leading-relaxed">
+          {part.text}
+        </pre>
+      );
+    }
+
+    return (
+      <pre key={`history-part-${index}`} className="whitespace-pre-wrap text-[11px] font-mono text-slate-400 leading-relaxed">
+        {JSON.stringify(part, null, 2)}
+      </pre>
+    );
+  };
+
   return (
     <div className="h-full overflow-y-auto bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-40 border-b border-slate-900/60 bg-slate-950/80 backdrop-blur">
@@ -401,25 +623,29 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
               <p className="text-xs text-slate-500">知识库已有 {existingEntityCount} 个角色资产</p>
             </div>
           </div>
-          <div className="hidden md:flex items-center gap-2">
-            {sessionId && (
-              <div className="text-xs text-slate-500 text-right">
-                <p>{sessionName || `Session ${sessionId.slice(0, 8)}`}</p>
-                <p>{lastSavedAt ? `已保存 ${new Date(lastSavedAt).toLocaleTimeString()}` : '本地自动保存'}</p>
-              </div>
-            )}
-            {navItems.map(item => (
-              <button
-                key={item.id}
-                onClick={() => setStep(item.id as AppStep)}
-                className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold transition-all ${
-                  step === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
-                }`}
-              >
-                <item.icon size={16} />
-                {item.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowHistory(prev => !prev)}
+              className="flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold bg-slate-900 text-slate-300 border border-slate-800 hover:text-white hover:border-indigo-400 transition-all"
+              title="查看当前上下文 History"
+            >
+              <Activity size={16} />
+              Trace
+            </button>
+            <div className="hidden md:flex items-center gap-2">
+              {navItems.map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => setStep(item.id as AppStep)}
+                  className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-semibold transition-all ${
+                    step === item.id ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/30' : 'bg-slate-900 text-slate-400 border border-slate-800 hover:text-white'
+                  }`}
+                >
+                  <item.icon size={16} />
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
           {loading && (
             <div className="flex items-center gap-2 text-indigo-300">
@@ -814,6 +1040,59 @@ export const ComicStudio: React.FC<ComicStudioProps> = ({ entities, onError, set
           </section>
         )}
       </main>
+
+      {showHistory && (
+        <div className="fixed inset-0 z-50 flex justify-end bg-slate-950/60 backdrop-blur-sm">
+          <div className="w-full max-w-md h-full bg-slate-950 border-l border-slate-800 shadow-2xl flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+              <div>
+                <div className="text-xs font-bold text-slate-400 uppercase tracking-[0.2em]">Trace</div>
+                <div className="text-base font-black text-white">当前上下文 History</div>
+                <div className="text-[11px] text-slate-500 mt-1">
+                  共 {historySnapshot.length} 条记录
+                  {historyClearedAt && <span className="ml-2 text-emerald-300">已清空</span>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleClearHistory}
+                  className="px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest border border-slate-800 text-slate-300 hover:text-white hover:border-indigo-400 transition-colors"
+                  title="清空模型上下文"
+                >
+                  清空 History
+                </button>
+                <button
+                  onClick={() => setShowHistory(false)}
+                  className="p-2 rounded-full border border-slate-800 text-slate-400 hover:text-white hover:border-slate-600 transition-colors"
+                  title="关闭"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+              {historySnapshot.length === 0 && (
+                <div className="text-sm text-slate-500">暂无历史内容，生成一次角色或页面后即可查看。</div>
+              )}
+              {historySnapshot.map((entry, index) => {
+                const { role, parts } = resolveHistoryEntry(entry);
+                return (
+                  <div key={`history-entry-${index}`} className="border border-slate-800 rounded-2xl p-4 bg-slate-900/60">
+                    <div className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">
+                      {role === 'user' ? 'User' : 'Model'} · #{index + 1}
+                    </div>
+                    <div className="mt-3 space-y-3">
+                      {parts?.length ? parts.map(renderHistoryPart) : (
+                        <div className="text-[12px] text-slate-500">[Empty parts]</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -5,7 +5,7 @@ import { ComicSessionPanel } from './components/ComicSessionPanel';
 import { KnowledgeBase } from './components/KnowledgeBase';
 import { ComicStudio } from './components/ComicStudio';
 import { ShieldCheck, Menu, X, RefreshCw, AlertCircle, Sparkles, LayoutGrid } from 'lucide-react';
-import { Entity } from './types';
+import { Entity, SceneReference } from './types';
 import { compressImage } from './utils';
 
 const discoveredAssets = import.meta.glob(
@@ -102,6 +102,8 @@ export default function App() {
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isScanning, setIsScanning] = useState<boolean>(false);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [sceneReferences, setSceneReferences] = useState<SceneReference[]>([]);
+  const [sceneRefsInjected, setSceneRefsInjected] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<'chat' | 'comic'>('chat');
   const envApiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
@@ -186,17 +188,101 @@ export default function App() {
           console.error("Failed to load cached knowledge base", e);
         }
       }
+      const savedSceneRefs = localStorage.getItem('gemini_scene_refs');
+      if (savedSceneRefs) {
+        try {
+          const parsed = JSON.parse(savedSceneRefs);
+          const valid = parsed.map((e: SceneReference) => ({
+            ...e,
+            imagePreview: e.base64 ? `data:${e.mimeType};base64,${e.base64}` : ''
+          }));
+          setSceneReferences(valid);
+        } catch (e) {
+          console.error("Failed to load cached scene references", e);
+        }
+      }
       scanKnowledgeBase();
     };
     init();
   }, []);
 
   useEffect(() => {
+    const persistEntities = (payload: Entity[]) => {
+      try {
+        localStorage.setItem('gemini_knowledge_base', JSON.stringify(payload));
+        return true;
+      } catch (e) {
+        console.error('[KnowledgeBase] Failed to persist entities', e);
+        return false;
+      }
+    };
+
     if (entities.length > 0) {
       const toSave = entities.map(e => ({ ...e, imagePreview: '' })); // Don't save blob URLs
-      localStorage.setItem('gemini_knowledge_base', JSON.stringify(toSave));
+      if (persistEntities(toSave)) return;
+
+      // Fallback: drop base64 to avoid quota errors
+      const withoutBase64 = entities.map(e => ({
+        ...e,
+        base64: '',
+        imagePreview: ''
+      }));
+      if (persistEntities(withoutBase64)) return;
+
+      // Last resort: minimal metadata only
+      const minimal = entities.map(e => ({
+        id: e.id,
+        name: e.name,
+        mimeType: e.mimeType,
+        base64: '',
+        imagePreview: ''
+      }));
+      persistEntities(minimal);
+    } else {
+      localStorage.removeItem('gemini_knowledge_base');
     }
   }, [entities]);
+
+  useEffect(() => {
+    const persistRefs = (payload: SceneReference[]) => {
+      try {
+        localStorage.setItem('gemini_scene_refs', JSON.stringify(payload));
+        return true;
+      } catch (e) {
+        console.error('[SceneRefs] Failed to persist references', e);
+        return false;
+      }
+    };
+
+    if (sceneReferences.length > 0) {
+      const toSave = sceneReferences.map(e => ({ ...e, imagePreview: '' })); // Don't save blob URLs
+      if (persistRefs(toSave)) return;
+
+      const withoutBase64 = sceneReferences.map(e => ({
+        ...e,
+        base64: '',
+        imagePreview: ''
+      }));
+      if (persistRefs(withoutBase64)) return;
+
+      const minimal = sceneReferences.map(e => ({
+        id: e.id,
+        name: e.name,
+        mimeType: e.mimeType,
+        base64: '',
+        imagePreview: ''
+      }));
+      persistRefs(minimal);
+    } else {
+      localStorage.removeItem('gemini_scene_refs');
+    }
+  }, [sceneReferences]);
+
+  useEffect(() => {
+    if (sceneReferences.length === 0 && sceneRefsInjected) {
+      setSceneRefsInjected(false);
+    }
+  }, [sceneReferences.length, sceneRefsInjected]);
 
   const handleSelectKey = async () => {
     if (window.aistudio) {
@@ -253,7 +339,14 @@ export default function App() {
       `}>
         {activeTab === 'comic' && <ComicSessionPanel />}
         <div className="flex-1 min-h-0">
-          <KnowledgeBase entities={entities} setEntities={setEntities} isScanning={isScanning} onRescan={scanKnowledgeBase} />
+          <KnowledgeBase
+            entities={entities}
+            setEntities={setEntities}
+            sceneReferences={sceneReferences}
+            setSceneReferences={setSceneReferences}
+            isScanning={isScanning}
+            onRescan={scanKnowledgeBase}
+          />
         </div>
       </div>
 
@@ -308,9 +401,22 @@ export default function App() {
 
         <div className="flex-1 min-h-0 overflow-hidden">
           {activeTab === 'chat' ? (
-            <ChatInterface onError={() => setHasKey(false)} entities={entities} />
+            <ChatInterface
+              onError={() => setHasKey(false)}
+              entities={entities}
+              sceneReferences={sceneReferences}
+              sceneRefsInjected={sceneRefsInjected}
+              setSceneRefsInjected={setSceneRefsInjected}
+            />
           ) : (
-            <ComicStudio onError={() => setHasKey(false)} entities={entities} setEntities={setEntities} />
+            <ComicStudio
+              onError={() => setHasKey(false)}
+              entities={entities}
+              setEntities={setEntities}
+              sceneReferences={sceneReferences}
+              sceneRefsInjected={sceneRefsInjected}
+              setSceneRefsInjected={setSceneRefsInjected}
+            />
           )}
         </div>
       </div>

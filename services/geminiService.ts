@@ -1,6 +1,6 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { Attachment, ChatMessage, ChatPart, Entity } from "../types";
+import { Attachment, ChatMessage, ChatPart, Entity, SceneReference } from "../types";
 import { generateId } from "../utils";
 
 const MODEL_NAME = 'gemini-3-pro-image-preview';
@@ -8,10 +8,21 @@ const MODEL_NAME = 'gemini-3-pro-image-preview';
 export class GeminiService {
   private history: any[] = [];
 
+  public getHistory(): any[] {
+    return JSON.parse(JSON.stringify(this.history));
+  }
+
   /**
    * Sends a multi-modal message to Gemini 3 Pro.
    */
-  public async sendMessage(text: string, attachments: Attachment[], entities: Entity[], mentions: Entity[] = []): Promise<ChatMessage> {
+  public async sendMessage(
+    text: string,
+    attachments: Attachment[],
+    entities: Entity[],
+    mentions: Entity[] = [],
+    sceneReferences: SceneReference[] = [],
+    injectSceneReferences = false
+  ): Promise<ChatMessage> {
     const apiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
     const ai = new GoogleGenAI({ apiKey });
     
@@ -32,12 +43,34 @@ IMAGE GENERATION:
 - Use the provided visual references for characters to maintain visual identity.
 - Describe the scene vividly.
 
+STYLE REFERENCE:
+- If a style reference block is provided, treat it as the global visual tone and apply it to image generation.
+
 MULTI-TURN:
 Remember the context of previous turns. If the user refers to "him" or "her" in relation to a character previously discussed or mentioned, maintain continuity.`
       },
     });
 
     const parts: any[] = [];
+
+    if (injectSceneReferences && sceneReferences.length > 0) {
+      parts.push({ text: "--- Style Reference (Global Visual Tone) ---\n" });
+      const uniqueStyleRefs = Array.from(new Map(sceneReferences.map(ref => [ref.id, ref])).values());
+      uniqueStyleRefs.forEach((ref, idx) => {
+        parts.push({ text: `[Style Reference ${idx + 1}: ${ref.name}]` });
+        if (ref.base64) {
+          parts.push({
+            inlineData: {
+              mimeType: ref.mimeType,
+              data: ref.base64
+            }
+          });
+        } else {
+          parts.push({ text: `[Note: Style data for ${ref.name} is currently offline.]` });
+        }
+      });
+      parts.push({ text: "--- End of Style Reference ---\n" });
+    }
     
     // Just-in-Time Injection for Mentions
     if (mentions.length > 0) {
